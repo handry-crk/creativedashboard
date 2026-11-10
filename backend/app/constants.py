@@ -20,6 +20,8 @@ JOB_FUNCTIONS = {
     "Lainnya": "LN",
 }
 
+# Hanya dua fungsi ini yang bisa menyetujui pendaftaran anggota baru
+MEMBER_APPROVER_FUNCTIONS = {"Marketing Manager", "Brand Manager"}
 APPROVER_FUNCTIONS = {"Brand Lead", "Marketing Lead", "Brand Manager", "Marketing Manager"}
 CREATIVE_FUNCTIONS = {"Graphic Designer", "Videographer / Editor"}
 SOCMED_FUNCTIONS = {"Socmed Specialist", "Admin Social Media"}

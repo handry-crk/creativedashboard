@@ -64,15 +64,15 @@ async def next_code(db) -> str:
 
 async def lead_ids(db) -> list[str]:
     s = await get_settings(db)
-    cls = [m["id"] async for m in db.members.find({"jobFunction": "Creative Lead", "active": True}, {"id": 1})]
+    cls = [m["id"] async for m in db.members.find({"jobFunction": "Creative Lead", "active": True, "approval": {"$nin": ["pending", "rejected"]}}, {"id": 1})]
     if cls:
         return cls
-    return [m["id"] async for m in db.members.find({"jobFunction": s.get("creativeLeadFallback", "Brand Lead"), "active": True}, {"id": 1})]
+    return [m["id"] async for m in db.members.find({"jobFunction": s.get("creativeLeadFallback", "Brand Lead"), "active": True, "approval": {"$nin": ["pending", "rejected"]}}, {"id": 1})]
 
 
 async def approver_ids(db) -> list[str]:
     from .constants import APPROVER_FUNCTIONS
-    return [m["id"] async for m in db.members.find({"jobFunction": {"$in": list(APPROVER_FUNCTIONS)}, "active": True}, {"id": 1})]
+    return [m["id"] async for m in db.members.find({"jobFunction": {"$in": list(APPROVER_FUNCTIONS)}, "active": True, "approval": {"$nin": ["pending", "rejected"]}}, {"id": 1})]
 
 
 async def active_count(db, member_id: str, exclude_id: str | None = None) -> int:

@@ -41,6 +41,14 @@ def check_pin(pin: str, h: str, salt: str) -> bool:
     return secrets.compare_digest(hash_pin(pin, salt)[0], h or "")
 
 
+def valid_company_email(email: str) -> bool:
+    from .config import config
+    e = (email or "").strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+", e):
+        return False
+    return e.rsplit("@", 1)[1] in config.ALLOWED_EMAIL_DOMAINS
+
+
 def valid_pin(pin: str) -> bool:
     return bool(re.fullmatch(r"\d{4,6}", pin or ""))
 
@@ -79,6 +87,12 @@ class Actor(dict):
         return self["role"] == "approver"
 
     @property
+    def is_member_approver(self) -> bool:
+        """Marketing Manager / Brand Manager (akun sungguhan, bukan PIN panel)."""
+        from .constants import MEMBER_APPROVER_FUNCTIONS
+        return self["id"] != "panel" and self.get("jobFunction") in MEMBER_APPROVER_FUNCTIONS
+
+    @property
     def is_lead(self) -> bool:
         """Creative Lead, Approver (override), atau panel."""
         return self["role"] in {"approver", "creative_lead"}
@@ -107,7 +121,7 @@ async def actor_from_request(request: Request) -> Actor | None:
     if s.get("panel"):
         return Actor(id="panel", name="Panel Admin", jobFunction="Panel", role="approver", email="")
     m = await db.members.find_one({"id": s["memberId"]}, PRIVATE_MEMBER)
-    if not m or not m.get("active", True):
+    if not m or not m.get("active", True) or m.get("approval", "approved") != "approved":
         return None
     m["role"] = role_for(m["jobFunction"])
     return Actor(m)
@@ -122,6 +136,12 @@ async def require_actor(request: Request) -> Actor:
     if not a:
         raise err(401, "Silakan masuk dulu (mode Lihat saja tidak bisa mengubah data)")
     return a
+
+
+async def require_member_approver(actor: Actor = Depends(require_actor)) -> Actor:
+    if not actor.is_member_approver:
+        raise err(403, "Hanya Marketing Manager / Brand Manager")
+    return actor
 
 
 async def require_lead(actor: Actor = Depends(require_actor)) -> Actor:
@@ -144,7 +164,7 @@ async def log(db, entity: str, entity_id: str, action: str, by: str, frm: Any = 
 
 async def members_map(db) -> dict:
     out = {}
-    async for m in db.members.find({}, PRIVATE_MEMBER):
+    async for m in db.members.find({"approval": {"$nin": ["pending", "rejected"]}}, PRIVATE_MEMBER):
         m["role"] = role_for(m["jobFunction"])
         out[m["id"]] = m
     return out

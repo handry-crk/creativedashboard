@@ -7,6 +7,9 @@ export default function Login({ onDone, onViewOnly }) {
   const [mode, setMode] = useState(members.length ? "login" : "register");
   const [f, setF] = useState({ memberId: "", pin: "", name: "", jobFunction: "", email: "" });
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const { allowedDomains = ["citarasakuliner.com"] } = useApp();
+  const domainText = allowedDomains.map((d) => "@" + d).join(" / ");
   const set = (k) => (v) => setF((x) => ({ ...x, [k]: typeof v === "object" && v?.target ? v.target.value : v }));
 
   async function submit(e) {
@@ -15,8 +18,15 @@ export default function Login({ onDone, onViewOnly }) {
     try {
       let r;
       if (mode === "login") r = await post("/api/auth/login", { memberId: f.memberId, pin: f.pin });
-      else if (mode === "register") r = await post("/api/auth/register", { name: f.name, jobFunction: f.jobFunction, email: f.email, pin: f.pin });
-      else r = await post("/api/auth/panel-login", { pin: f.pin });
+      else if (mode === "register") {
+        r = await post("/api/auth/register", { name: f.name, jobFunction: f.jobFunction, email: f.email, pin: f.pin });
+        if (r.pending) {
+          setNotice(r.message);
+          setMode("login");
+          setF((x) => ({ ...x, pin: "" }));
+          return;
+        }
+      } else r = await post("/api/auth/panel-login", { pin: f.pin });
       auth.set(r.token);
       toast(`Selamat datang, ${r.member.name}`);
       onDone();
@@ -41,6 +51,7 @@ export default function Login({ onDone, onViewOnly }) {
               <button type="button" key={k} onClick={() => setMode(k)} className={`flex-1 btn-sm btn ${mode === k ? "bg-brand text-white" : "bg-gray-100"}`}>{l}</button>
             ))}
           </div>
+          {notice && <div className="rounded-lg bg-green-50 text-green-800 text-sm p-3">{notice}</div>}
           {mode === "login" && (
             <Field label="Nama"><Select value={f.memberId} onChange={set("memberId")} placeholder="Pilih nama…" options={active.map((m) => ({ value: m.id, label: `${m.name} — ${m.jobFunction}` }))} required /></Field>
           )}
@@ -48,7 +59,9 @@ export default function Login({ onDone, onViewOnly }) {
             <>
               <Field label="Nama"><input className="inp" value={f.name} onChange={set("name")} required minLength={2} /></Field>
               <Field label="Fungsi kerja"><Select value={f.jobFunction} onChange={set("jobFunction")} placeholder="Pilih…" options={meta.jobFunctions} required /></Field>
-              <Field label="Email"><input className="inp" type="email" value={f.email} onChange={set("email")} required /></Field>
+              <Field label="Email kantor" hint={`Hanya email ${domainText}. Akun aktif setelah disetujui Marketing Manager atau Brand Manager.`}>
+                <input className="inp" type="email" value={f.email} onChange={set("email")} required placeholder={`nama${domainText.split(" / ")[0]}`} />
+              </Field>
             </>
           )}
           <Field label={mode === "panel" ? "PIN panel" : "PIN (4–6 angka)"}>

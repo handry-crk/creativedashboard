@@ -40,9 +40,16 @@ async def ctx():
     app = create_app(db=db, start_scheduler=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         x = Ctx(c)
+        # Manager pertama disetujui otomatis (bootstrap); anggota lain menunggu persetujuannya
+        r = await c.post("/api/auth/register", json={"name": "Maya", "jobFunction": "Marketing Manager", "email": "maya@citarasakuliner.com", "pin": "1234"})
+        assert r.status_code == 200 and r.json()["token"], r.text
+        x.tok["maya"] = r.json()["token"]
         for name, fn in [("Dina", "Graphic Designer"), ("Raka", "Videographer / Editor"),
                          ("Sinta", "Socmed Specialist"), ("Agoy", "Brand Lead")]:
-            r = await c.post("/api/auth/register", json={"name": name, "jobFunction": fn, "email": f"{name.lower()}@x.id", "pin": "1234"})
+            r = await c.post("/api/auth/register", json={"name": name, "jobFunction": fn, "email": f"{name.lower()}@citarasakuliner.com", "pin": "1234"})
+            assert r.status_code == 200 and r.json()["pending"], r.text
+            assert (await c.post(f"/api/members/{name.lower()}/approve", headers={"Authorization": f"Bearer {x.tok['maya']}"})).status_code == 200
+            r = await c.post("/api/auth/login", json={"memberId": name.lower(), "pin": "1234"})
             assert r.status_code == 200, r.text
             x.tok[name.lower()] = r.json()["token"]
         x.db = db
@@ -81,7 +88,7 @@ async def qc_all(x, rid, maker="dina", reviewer="agoy"):
 async def test_roles(ctx):
     st = (await ctx.get("/api/state", headers=ctx.h("agoy"))).json()
     roles = {m["id"]: m["role"] for m in st["members"]}
-    assert roles == {"dina": "creative", "raka": "creative", "sinta": "socmed", "agoy": "approver"}
+    assert roles == {"dina": "creative", "raka": "creative", "sinta": "socmed", "agoy": "approver", "maya": "approver"}
     assert "panelPinHash" not in st["settings"]
 
 
@@ -254,3 +261,40 @@ async def test_import_csv(ctx):
     items = (await ctx.get("/api/content?month=2026-11")).json()
     promo = next(i for i in items if i["date"] == "2026-11-26")
     assert promo["isPromo"] and promo["gateStatus"] == "PENDING" and promo["status"] == "Idea" and promo["platform"] == "IG"
+
+
+async def test_registration_security(ctx):
+    c = ctx.c
+    # domain lain ditolak
+    r = await c.post("/api/auth/register", json={"name": "Luar", "jobFunction": "Lainnya", "email": "luar@gmail.com", "pin": "1234"})
+    assert r.status_code == 400 and "citarasakuliner.com" in r.json()["detail"]["message"]
+    r = await c.post("/api/auth/register", json={"name": "Licik", "jobFunction": "Lainnya", "email": "x@citarasakuliner.com.evil.id", "pin": "1234"})
+    assert r.status_code == 400
+    # manager kedua tidak otomatis disetujui
+    r = await c.post("/api/auth/register", json={"name": "Budi", "jobFunction": "Brand Manager", "email": "budi@CitarasaKuliner.com", "pin": "1234"})
+    assert r.status_code == 200 and r.json()["pending"] and "token" not in r.json()
+    r = await c.post("/api/auth/login", json={"memberId": "budi", "pin": "1234"})
+    assert r.status_code == 403 and "persetujuan" in r.json()["detail"]["message"]
+    # pending tidak muncul di daftar login
+    st = (await c.get("/api/state")).json()
+    assert "budi" not in {m["id"] for m in st["members"]}
+    # Brand Lead (approver aset) dan panel PIN tidak bisa menyetujui anggota
+    assert (await ctx.post("agoy", "/api/members/budi/approve")).status_code == 403
+    panel = (await c.post("/api/auth/panel-login", json={"pin": "1234"})).json()["token"]
+    assert (await c.post("/api/members/budi/approve", headers={"Authorization": f"Bearer {panel}"})).status_code == 403
+    # Marketing Manager melihat & menyetujui
+    st = (await c.get("/api/state", headers=ctx.h("maya"))).json()
+    assert st["pendingMembers"] == 1 and st["me"]["canApproveMembers"]
+    pend = (await c.get("/api/members/pending", headers=ctx.h("maya"))).json()
+    assert [m["id"] for m in pend] == ["budi"]
+    assert (await ctx.post("maya", "/api/members/budi/approve")).status_code == 200
+    r = await c.post("/api/auth/login", json={"memberId": "budi", "pin": "1234"})
+    assert r.status_code == 200
+    # tolak -> tidak bisa masuk; boleh daftar ulang
+    await c.post("/api/auth/register", json={"name": "Tono", "jobFunction": "Lainnya", "email": "tono@citarasakuliner.com", "pin": "1234"})
+    assert (await ctx.post("maya", "/api/members/tono/reject", {"note": "Bukan tim marketing"})).status_code == 200
+    assert (await c.post("/api/auth/login", json={"memberId": "tono", "pin": "1234"})).status_code == 403
+    # Brand Lead tidak bisa mengubah fungsi kerja (eskalasi hak akses) atau memakai email luar
+    assert (await ctx.put("agoy", "/api/members/dina", {"jobFunction": "Marketing Manager"})).status_code == 403
+    assert (await ctx.put("dina", "/api/members/dina", {"email": "dina@gmail.com"})).status_code == 400
+    assert (await ctx.put("maya", "/api/members/dina", {"jobFunction": "Creative Lead"})).status_code == 200

@@ -18,8 +18,9 @@ export default function App() {
 
   const load = useCallback(async () => {
     try {
+      const used = auth.token;
       const [s, m] = await Promise.all([get("/api/state"), meta ? Promise.resolve(meta) : get("/api/meta")]);
-      if (!s.me && auth.token) auth.set("");
+      if (!s.me && used && auth.token === used) auth.set("");
       setState(s);
       setMeta(m);
       setLastRefresh(new Date());
@@ -45,6 +46,7 @@ export default function App() {
     const role = me?.role;
     return {
       me, members, byId, settings: state?.settings, meta, today: state?.today, tick, reload, toast,
+      allowedDomains: state?.allowedDomains, pendingMembers: state?.pendingMembers || 0, canApproveMembers: !!me?.canApproveMembers,
       canEdit: !!me,
       isLead: role === "approver" || role === "creative_lead",
       isApprover: role === "approver",
@@ -102,6 +104,11 @@ export default function App() {
           </nav>
         </header>
         <main className="max-w-[1400px] mx-auto px-3 md:px-6 py-4">
+          {ctx.canApproveMembers && ctx.pendingMembers > 0 && tab !== "pengaturan" && (
+            <button onClick={() => go("pengaturan")} className="w-full mb-3 rounded-lg bg-brand-yellow/30 border border-brand-yellow px-3 py-2 text-sm text-left">
+              <b>{ctx.pendingMembers} pendaftaran</b> menunggu persetujuan Anda. Buka Pengaturan →
+            </button>
+          )}
           {tab === "produksi" && <Produksi />}
           {tab === "kalender" && <Kalender />}
           {tab === "pengaturan" && ctx.isLead && <Pengaturan />}

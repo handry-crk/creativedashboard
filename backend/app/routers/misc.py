@@ -27,11 +27,14 @@ async def meta():
 async def state(actor: Actor | None = Depends(optional_actor), db=Depends(get_db)):
     s = await get_settings(db)
     members = []
-    async for m in db.members.find({}, {"_id": 0, "pinHash": 0, "pinSalt": 0, "failedAttempts": 0, "lockedUntil": 0}).sort("name", 1):
+    async for m in db.members.find({"approval": {"$nin": ["pending", "rejected"]}}, {"_id": 0, "pinHash": 0, "pinSalt": 0, "failedAttempts": 0, "lockedUntil": 0}).sort("name", 1):
         from ..constants import role_for
         m["role"] = role_for(m["jobFunction"])
         members.append(m)
-    return {"me": dict(actor) if actor else None, "settings": public_settings(s), "members": members,
+    pending = await db.members.count_documents({"approval": "pending"}) if actor and actor.is_member_approver else 0
+    from ..config import config
+    return {"me": {**dict(actor), "canApproveMembers": actor.is_member_approver} if actor else None, "settings": public_settings(s),
+            "members": members, "pendingMembers": pending, "allowedDomains": config.ALLOWED_EMAIL_DOMAINS,
             "today": clock.today_str(), "now": clock.now().isoformat()}
 
 

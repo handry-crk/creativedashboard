@@ -13,6 +13,8 @@ class Config:
     SMTP_USER = os.getenv("SMTP_USER", "")
     SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
     MAIL_FROM = os.getenv("MAIL_FROM", "CRK Creative Hub <noreply@example.com>")
+    # Hanya email dengan domain ini yang boleh mendaftar (pisahkan dengan koma bila lebih dari satu)
+    ALLOWED_EMAIL_DOMAINS = [d.strip().lower().lstrip("@") for d in os.getenv("ALLOWED_EMAIL_DOMAINS", "citarasakuliner.com").split(",") if d.strip()]
     BACKUP_DIR = os.getenv("BACKUP_DIR", "./backups")
     ENABLE_SCHEDULER = os.getenv("ENABLE_SCHEDULER", "1") == "1"
     SERVE_FRONTEND = os.getenv("SERVE_FRONTEND", "")  # path ke frontend/dist bila backend sekaligus menyajikan UI

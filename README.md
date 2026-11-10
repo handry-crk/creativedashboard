@@ -64,6 +64,15 @@ Jadwal default (bisa diubah di Pengaturan):
 
 Scheduler mengecek tiap 15 menit dan setiap slot hanya dikirim sekali per hari.
 
+## Keamanan pendaftaran
+
+- **Hanya email kantor yang boleh mendaftar.** Defaultnya `@citarasakuliner.com`; bisa diubah lewat env `ALLOWED_EMAIL_DOMAINS` (pisahkan dengan koma).
+- **Setiap pendaftaran baru berstatus menunggu.** Akun belum bisa masuk dan belum muncul di daftar nama sampai disetujui **Marketing Manager** atau **Brand Manager** di **Pengaturan → Persetujuan anggota**. Manager mendapat email saat ada pendaftaran baru, dan pendaftar mendapat email saat diputuskan.
+- **Manager pertama disetujui otomatis.** Marketing Manager atau Brand Manager yang mendaftar pertama kali (selama belum ada manager aktif) langsung aktif. Karena itu, **daftarkan akun Marketing Manager sesaat setelah deploy**, sebelum link app dibagikan ke tim.
+- **Yang tidak bisa menyetujui anggota:** Brand Lead, Marketing Lead, Creative Lead, dan PIN panel.
+- **Fungsi kerja menentukan hak akses**, jadi hanya Marketing Manager / Brand Manager yang bisa mengubahnya.
+- **Ganti PIN panel default (1234)** di Pengaturan segera setelah deploy. PIN panel memberi hak Approver untuk aset dan pengaturan.
+
 ## Role
 
 | Fungsi kerja | Role | Bisa apa |
@@ -106,7 +115,7 @@ Kalau tim belum punya Creative Lead, Brand Lead otomatis mengambil perannya (bis
 ```bash
 cd backend && pip install -r requirements-dev.txt && python -m pytest -q
 ```
-Ada 11 tes yang mencakup seluruh acceptance test di spec:
+Ada 12 tes yang mencakup seluruh acceptance test di spec, ditambah aturan keamanan pendaftaran:
 - role
 - alur kalender → brief → SLA
 - kunci Gate
@@ -118,6 +127,7 @@ Ada 11 tes yang mencakup seluruh acceptance test di spec:
 - mix pillar
 - rekap mingguan & kunci PIN
 - impor CSV
+- domain email & persetujuan Marketing/Brand Manager
 
 ## Pengembangan lokal (hot reload)
 

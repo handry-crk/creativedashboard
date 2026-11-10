@@ -1,13 +1,14 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
-from .. import clock
-from ..constants import JOB_FUNCTIONS, role_for
+from .. import clock, notify
+from ..config import config
+from ..constants import JOB_FUNCTIONS, MEMBER_APPROVER_FUNCTIONS, role_for
 from ..core import (
-    get_db, err, slugify, hash_pin, check_pin, valid_pin, create_session, get_settings,
-    require_actor, require_lead, require_approver, log, PRIVATE_MEMBER, Actor, lock_minutes,
+    get_db, err, slugify, hash_pin, check_pin, valid_pin, valid_company_email, create_session, get_settings,
+    require_actor, require_lead, require_member_approver, log, PRIVATE_MEMBER, Actor, lock_minutes,
 )
 
 router = APIRouter(prefix="/api")
@@ -35,26 +36,51 @@ def _member_out(m: dict) -> dict:
     return m
 
 
+def _domain_text() -> str:
+    return " / ".join("@" + d for d in config.ALLOWED_EMAIL_DOMAINS)
+
+
+async def _manager_emails(db) -> list[str]:
+    return [m["email"] async for m in db.members.find(
+        {"jobFunction": {"$in": list(MEMBER_APPROVER_FUNCTIONS)}, "active": True, "approval": "approved"}, {"email": 1, "_id": 0})]
+
+
 @router.post("/auth/register")
 async def register(body: RegisterIn, db=Depends(get_db)):
     if body.jobFunction not in JOB_FUNCTIONS:
         raise err(400, "Fungsi kerja tidak dikenal")
     if not valid_pin(body.pin):
         raise err(400, "PIN harus 4–6 angka")
-    if "@" not in body.email:
-        raise err(400, "Email tidak valid")
+    if not valid_company_email(body.email):
+        raise err(400, f"Pendaftaran hanya untuk email kantor {_domain_text()}")
+    email = body.email.strip().lower()
     mid = slugify(body.name)
-    if await db.members.find_one({"id": mid}):
-        raise err(409, "Nama sudah terdaftar. Pilih nama di daftar lalu masuk dengan PIN.")
+    existing = await db.members.find_one({"id": mid})
+    if existing and existing.get("approval") == "rejected":
+        await db.members.delete_one({"id": mid})  # boleh daftar ulang setelah ditolak
+    elif existing:
+        raise err(409, "Nama sudah terdaftar. Pilih nama di daftar lalu masuk dengan PIN, atau tunggu persetujuan.")
+    if await db.members.find_one({"email": email, "approval": {"$ne": "rejected"}}):
+        raise err(409, "Email sudah terdaftar")
     settings = await get_settings(db)
+    # Bootstrap: Marketing/Brand Manager pertama disetujui otomatis bila belum ada manager yang aktif.
+    has_manager = await db.members.count_documents(
+        {"jobFunction": {"$in": list(MEMBER_APPROVER_FUNCTIONS)}, "active": True, "approval": "approved"})
+    auto = body.jobFunction in MEMBER_APPROVER_FUNCTIONS and has_manager == 0
     h, salt = hash_pin(body.pin)
-    m = {"id": mid, "name": body.name.strip(), "jobFunction": body.jobFunction, "email": body.email.strip(),
+    m = {"id": mid, "name": body.name.strip(), "jobFunction": body.jobFunction, "email": email,
          "pinHash": h, "pinSalt": salt, "active": True, "capacity": settings.get("defaultCapacity", 6),
-         "failedAttempts": 0, "lockedUntil": None, "createdAt": clock.iso_utc()}
+         "failedAttempts": 0, "lockedUntil": None, "createdAt": clock.iso_utc(),
+         "approval": "approved" if auto else "pending", "approvedBy": "bootstrap" if auto else None, "approvedAt": clock.iso_utc() if auto else None}
     await db.members.insert_one(dict(m))
-    token = await create_session(db, mid)
-    await log(db, "member", mid, "register", mid)
-    return {"token": token, "member": _member_out(m)}
+    await log(db, "member", mid, "register", mid, to=m["approval"])
+    if auto:
+        token = await create_session(db, mid)
+        return {"token": token, "member": _member_out(m), "pending": False}
+    await notify.send(db, await _manager_emails(db), f"Pendaftaran baru menunggu persetujuan: {m['name']}",
+                      notify.layout("Pendaftaran baru", f"<p><b>{m['name']}</b> ({m['jobFunction']}, {email}) mendaftar ke Creative Hub.</p>"
+                                    "<p>Setujui atau tolak di menu Pengaturan → Persetujuan anggota.</p>", path="/?tab=pengaturan"), "member-approval")
+    return {"pending": True, "message": "Pendaftaran terkirim. Akun aktif setelah disetujui Marketing Manager atau Brand Manager."}
 
 
 @router.post("/auth/login")
@@ -62,6 +88,10 @@ async def login(body: LoginIn, db=Depends(get_db)):
     m = await db.members.find_one({"id": body.memberId})
     if not m or not m.get("active", True):
         raise err(404, "Anggota tidak ditemukan atau nonaktif")
+    if m.get("approval", "approved") == "pending":
+        raise err(403, "Akun menunggu persetujuan Marketing Manager / Brand Manager")
+    if m.get("approval") == "rejected":
+        raise err(403, "Pendaftaran ditolak. Hubungi Marketing Manager / Brand Manager.")
     now = clock.now()
     if m.get("lockedUntil"):
         until = datetime.fromisoformat(m["lockedUntil"])
@@ -118,7 +148,7 @@ class ResetPin(BaseModel):
 @router.get("/members")
 async def list_members(db=Depends(get_db)):
     out = []
-    async for m in db.members.find({}, PRIVATE_MEMBER).sort("name", 1):
+    async for m in db.members.find({"approval": {"$nin": ["pending", "rejected"]}}, PRIVATE_MEMBER).sort("name", 1):
         m["role"] = role_for(m["jobFunction"])
         out.append(m)
     return out
@@ -131,6 +161,16 @@ async def update_member(mid: str, body: MemberUpdate, actor: Actor = Depends(req
     upd = body.model_dump(exclude_unset=True)
     if "jobFunction" in upd and upd["jobFunction"] not in JOB_FUNCTIONS:
         raise err(400, "Fungsi kerja tidak dikenal")
+    if "email" in upd:
+        if not valid_company_email(upd["email"]):
+            raise err(400, f"Email harus memakai domain kantor {_domain_text()}")
+        upd["email"] = upd["email"].strip().lower()
+    target = await db.members.find_one({"id": mid}, PRIVATE_MEMBER)
+    if not target:
+        raise err(404, "Anggota tidak ditemukan")
+    # Ganti fungsi kerja = ganti hak akses -> hanya Marketing/Brand Manager
+    if "jobFunction" in upd and upd["jobFunction"] != target["jobFunction"] and not actor.is_member_approver:
+        raise err(403, "Perubahan fungsi kerja hanya oleh Marketing Manager / Brand Manager")
     if not actor.is_lead:
         upd.pop("active", None)
         upd.pop("capacity", None)
@@ -155,3 +195,43 @@ async def reset_pin(mid: str, body: ResetPin, actor: Actor = Depends(require_lea
     await db.sessions.delete_many({"memberId": mid})
     await log(db, "member", mid, "reset-pin", actor.id)
     return {"ok": True}
+
+
+# ---------- Persetujuan pendaftaran (Marketing Manager / Brand Manager) ----------
+class DecisionIn(BaseModel):
+    note: str = ""
+
+
+@router.get("/members/pending")
+async def pending_members(actor: Actor = Depends(require_member_approver), db=Depends(get_db)):
+    return [m async for m in db.members.find({"approval": "pending"}, PRIVATE_MEMBER).sort("createdAt", 1)]
+
+
+async def _decide(db, actor: Actor, mid: str, decision: str, note: str):
+    m = await db.members.find_one({"id": mid}, PRIVATE_MEMBER)
+    if not m:
+        raise err(404, "Anggota tidak ditemukan")
+    if m.get("approval") != "pending":
+        raise err(400, "Pendaftaran ini sudah diputuskan")
+    await db.members.update_one({"id": mid}, {"$set": {"approval": decision, "approvedBy": actor.id,
+                                                        "approvedAt": clock.iso_utc(), "approvalNote": note}})
+    await log(db, "member", mid, f"member-{decision}", actor.id, note=note)
+    ok = decision == "approved"
+    await notify.send(db, [m["email"]], "Akun Creative Hub " + ("disetujui" if ok else "ditolak"),
+                      notify.layout("Akun disetujui" if ok else "Pendaftaran ditolak",
+                                    f"<p>Halo {m['name']}, " + ("akun Anda sudah aktif. Masuk dengan nama dan PIN Anda.</p>" if ok
+                                                                 else f"pendaftaran Anda ditolak oleh {actor.get('name')}.</p><p>{note}</p>")),
+                      "member-decision")
+    m = await db.members.find_one({"id": mid}, PRIVATE_MEMBER)
+    m["role"] = role_for(m["jobFunction"])
+    return m
+
+
+@router.post("/members/{mid}/approve")
+async def approve_member(mid: str, body: DecisionIn | None = None, actor: Actor = Depends(require_member_approver), db=Depends(get_db)):
+    return await _decide(db, actor, mid, "approved", body.note if body else "")
+
+
+@router.post("/members/{mid}/reject")
+async def reject_member(mid: str, body: DecisionIn | None = None, actor: Actor = Depends(require_member_approver), db=Depends(get_db)):
+    return await _decide(db, actor, mid, "rejected", body.note if body else "")

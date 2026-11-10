@@ -75,6 +75,6 @@ async def event(db, member_ids: list[str], subject: str, lines: list[str], path:
     ids = [i for i in member_ids if i]
     if not ids:
         return
-    emails = [m["email"] async for m in db.members.find({"id": {"$in": ids}, "active": True}, {"email": 1, "_id": 0})]
+    emails = [m["email"] async for m in db.members.find({"id": {"$in": ids}, "active": True, "approval": {"$nin": ["pending", "rejected"]}}, {"email": 1, "_id": 0})]
     body = "".join(f"<p style='margin:6px 0'>{html.escape(l)}</p>" for l in lines)
     await send(db, emails, subject, layout(subject, body, path=path), kind="event")

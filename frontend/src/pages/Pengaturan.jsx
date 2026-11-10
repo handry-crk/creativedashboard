@@ -8,7 +8,7 @@ const lines = (a) => (a || []).join("\n");
 const unlines = (s) => s.split("\n").map((x) => x.trim()).filter(Boolean);
 
 export default function Pengaturan() {
-  const { settings, members, meta, isApprover, tick } = useApp();
+  const { settings, members, meta, isApprover, tick, canApproveMembers } = useApp();
   const run = useRunner();
   const [s, setS] = useState(null);
   const [month, setMonth] = useState("");
@@ -40,6 +40,8 @@ export default function Pengaturan() {
         <h2 className="text-lg font-extrabold">Pengaturan</h2>
         <button className="btn-primary" onClick={save}>Simpan pengaturan</button>
       </div>
+
+      {canApproveMembers && <PendingMembers />}
 
       <section className="card p-4">
         <h3 className="font-bold mb-3">SLA produksi (hari kerja)</h3>
@@ -125,6 +127,32 @@ export default function Pengaturan() {
   );
 }
 
+function PendingMembers() {
+  const { tick } = useApp();
+  const run = useRunner();
+  const [list, setList] = useState([]);
+  useEffect(() => { get("/api/members/pending").then(setList).catch(() => {}); }, [tick]);
+  return (
+    <section className="card p-4 border-brand-yellow">
+      <h3 className="font-bold mb-1">Persetujuan anggota</h3>
+      <p className="text-xs text-gray-600 mb-3">Hanya Marketing Manager dan Brand Manager yang bisa menyetujui. Periksa nama, fungsi kerja, dan email sebelum menyetujui.</p>
+      {!list.length && <div className="text-sm text-gray-500">Tidak ada pendaftaran yang menunggu.</div>}
+      <div className="space-y-2">
+        {list.map((m) => (
+          <div key={m.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-brand-line p-3">
+            <div className="flex-1 min-w-[200px]">
+              <div className="font-semibold">{m.name} <span className="chip bg-gray-100">{m.jobFunction}</span></div>
+              <div className="text-xs text-gray-600">{m.email} · daftar {fmtTime(m.createdAt)}</div>
+            </div>
+            <button className="btn-primary btn-sm" onClick={() => run(() => post(`/api/members/${m.id}/approve`), `${m.name} disetujui`)}>Setujui</button>
+            <button className="btn-ghost btn-sm" onClick={() => { const n = window.prompt(`Alasan menolak ${m.name}:`); if (n !== null) run(() => post(`/api/members/${m.id}/reject`, { note: n }), `${m.name} ditolak`); }}>Tolak</button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Members({ members, meta }) {
   const run = useRunner();
   return (
@@ -138,18 +166,19 @@ function Members({ members, meta }) {
 }
 
 function MemberCard({ m, meta, run }) {
+  const { canApproveMembers } = useApp();
   const [f, setF] = useState({ name: m.name, jobFunction: m.jobFunction, email: m.email, capacity: m.capacity || 6 });
   return (
     <div className={`rounded-lg border border-brand-line p-3 ${m.active === false ? "opacity-60" : ""}`}>
       <div className="grid grid-cols-2 gap-2">
         <input className="inp" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-        <Select value={f.jobFunction} onChange={(v) => setF({ ...f, jobFunction: v })} options={meta.jobFunctions} />
+        <Select value={f.jobFunction} onChange={(v) => setF({ ...f, jobFunction: v })} options={meta.jobFunctions} disabled={!canApproveMembers} title={canApproveMembers ? "" : "Hanya Marketing/Brand Manager"} />
         <input className="inp" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
         <label className="flex items-center gap-2 text-xs">Kapasitas<input type="number" min={1} className="inp" value={f.capacity} onChange={(e) => setF({ ...f, capacity: Number(e.target.value) })} /></label>
       </div>
       <div className="flex flex-wrap gap-2 mt-2 text-xs items-center">
         <span className="chip bg-gray-100">{m.role}</span>
-        <button className="btn-primary btn-sm" onClick={() => run(() => put(`/api/members/${m.id}`, f), "Anggota disimpan")}>Simpan</button>
+        <button className="btn-primary btn-sm" onClick={() => { const b = { ...f }; if (b.jobFunction === m.jobFunction) delete b.jobFunction; run(() => put(`/api/members/${m.id}`, b), "Anggota disimpan"); }}>Simpan</button>
         <button className="btn-ghost btn-sm" onClick={() => run(() => put(`/api/members/${m.id}`, { active: m.active === false }), m.active === false ? "Diaktifkan" : "Dinonaktifkan")}>{m.active === false ? "Aktifkan" : "Nonaktifkan"}</button>
         <button className="btn-ghost btn-sm" onClick={() => { const p = window.prompt(`PIN baru untuk ${m.name} (4–6 angka):`); if (p) run(() => post(`/api/members/${m.id}/reset-pin`, { pin: p }), "PIN direset"); }}>Reset PIN</button>
       </div>
